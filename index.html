@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#14110e">
+<title>目隠し将棋</title>
+<script>
+  // GitHub Pages などヘッダーを設定できない場所でも SharedArrayBuffer を使えるようにする
+  (function () {
+    var ss = null; try { ss = window.sessionStorage; } catch (e) {}
+    if (window.crossOriginIsolated) { try { ss && ss.removeItem('coiReload'); } catch (e) {} return; }
+    if (!window.isSecureContext || !('serviceWorker' in navigator)) return;
+    var reloaded = false; try { reloaded = ss && ss.getItem('coiReload') === '1'; } catch (e) {}
+    function reloadOnce() {
+      if (reloaded) return; reloaded = true;
+      try { ss && ss.setItem('coiReload', '1'); } catch (e) {}
+      location.reload();
+    }
+    navigator.serviceWorker.register('sw.js').then(function () {
+      if (navigator.serviceWorker.controller) reloadOnce();
+      else navigator.serviceWorker.addEventListener('controllerchange', reloadOnce);
+    }).catch(function (e) { console.warn('SW登録失敗', e); });
+  })();
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- 設定画面 -->
+<section id="setup" class="screen active">
+  <div class="setup-wrap">
+    <header class="brand">
+      <div class="brand-mark">盲</div>
+      <div>
+        <h1>目隠し将棋</h1>
+        <p class="sub">盤を見ずに、声で指す。</p>
+      </div>
+    </header>
+
+    <div id="envWarn" class="warn" hidden></div>
+
+    <div class="field">
+      <label>あなたの手番</label>
+      <div class="seg" data-name="color">
+        <button data-v="0" class="on">先手</button><button data-v="1">後手</button><button data-v="r">ランダム</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>強さ</label>
+      <div class="seg vertical" data-name="level">
+        <button data-v="beginner" class="on">初級 <small>アマ1級くらい</small></button>
+        <button data-v="intermediate">中級 <small>アマ初段くらい</small></button>
+        <button data-v="advanced">上級 <small>アマ2〜3段くらい</small></button>
+      </div>
+      <div class="seg small" data-name="tune">
+        <button data-v="-1">少し弱く</button><button data-v="0" class="on">標準</button><button data-v="1">少し強く</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>ヒント（盤面を見られる回数）</label>
+      <div class="seg" data-name="hints">
+        <button data-v="0">なし</button><button data-v="1">1回</button><button data-v="3" class="on">3回</button><button data-v="5">5回</button><button data-v="99">無制限</button>
+      </div>
+      <div class="seg small" data-name="hintSec">
+        <button data-v="5">5秒表示</button><button data-v="10" class="on">10秒表示</button><button data-v="0">閉じるまで</button>
+      </div>
+    </div>
+
+    <details class="more">
+      <summary>音声・その他の設定</summary>
+      <div class="field">
+        <label>指す前の確認（「よろしいですか」と復唱）</label>
+        <div class="seg" data-name="confirm"><button data-v="1" class="on">あり</button><button data-v="0">なし</button></div>
+      </div>
+      <div class="field">
+        <label>相手が指したら自動で聞き取り開始</label>
+        <div class="seg" data-name="auto"><button data-v="1" class="on">する</button><button data-v="0">しない</button></div>
+      </div>
+      <div class="field">
+        <label>王手を知らせる</label>
+        <div class="seg" data-name="check"><button data-v="1" class="on">知らせる</button><button data-v="0">知らせない</button></div>
+      </div>
+      <div class="field">
+        <label>画面に符号を表示</label>
+        <div class="seg" data-name="showText"><button data-v="1" class="on">表示</button><button data-v="0">隠す</button></div>
+      </div>
+      <div class="field">
+        <label>読み上げの速さ <span id="rateVal">1.0</span></label>
+        <input type="range" id="rate" min="0.6" max="1.6" step="0.1" value="1.0">
+      </div>
+    </details>
+
+    <div class="engine-status">
+      <div class="bar"><div id="loadBar"></div></div>
+      <span id="loadText">エンジンを準備しています…</span>
+    </div>
+
+    <button id="startBtn" class="primary" disabled>対局開始</button>
+    <p class="hint-text">対局中は、画面のどこかをタップ（またはスペースキー）すると聞き取りを始めます。<br>例：「ななろくふ」「同銀」「ごはちきん みぎ」「にさんふ なり」「ごごかく うつ」</p>
+  </div>
+</section>
+
+<!-- 対局画面 -->
+<section id="play" class="screen">
+  <div class="topbar">
+    <span id="sideLabel"></span>
+    <span id="plyLabel"></span>
+  </div>
+  <div id="tapArea" class="tap-area" role="button" aria-label="タップして話す">
+    <div id="micRing" class="mic-ring"><div class="mic-dot"></div></div>
+    <div id="status" class="status">準備中</div>
+    <div id="lastMove" class="last-move"></div>
+    <div id="heard" class="heard"></div>
+    <div id="choice" class="choice" hidden>
+      <button id="yesBtn" class="primary">はい</button>
+      <button id="noBtn">いいえ</button>
+    </div>
+  </div>
+  <form id="typeForm" class="type-form" autocomplete="off">
+    <input id="typeInput" placeholder="文字でも入力できます（例：76歩、同銀）" enterkeyhint="send">
+    <button type="submit">送る</button>
+  </form>
+  <nav class="actions">
+    <button id="hintBtn">ヒント <b id="hintLeft"></b></button>
+    <button id="repeatBtn">もう一度</button>
+    <button id="undoBtn">待った</button>
+    <button id="resignBtn" class="danger">投了</button>
+  </nav>
+</section>
+
+<!-- 盤面（ヒント・終局） -->
+<div id="boardOverlay" class="overlay" hidden>
+  <div class="overlay-card">
+    <div class="overlay-head">
+      <span id="overlayTitle">現在の局面</span>
+      <span id="overlayTimer"></span>
+    </div>
+    <div id="boardView" class="board-view"></div>
+    <div id="endPanel" hidden>
+      <div id="resultText" class="result"></div>
+      <pre id="kifuText" class="kifu"></pre>
+      <div class="row">
+        <button id="copyKif">棋譜をコピー</button>
+        <button id="saveKif">棋譜を保存</button>
+        <button id="newGame" class="primary">新しい対局</button>
+      </div>
+    </div>
+    <button id="closeOverlay" class="close">閉じる</button>
+  </div>
+</div>
+
+<script src="shogi.js"></script>
+<script src="levels.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
