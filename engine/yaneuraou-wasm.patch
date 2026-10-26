@@ -1,0 +1,116 @@
+diff --git a/source/Makefile b/source/Makefile
+index e862b78..cc64156 100644
+--- a/source/Makefile
++++ b/source/Makefile
+@@ -243,15 +243,16 @@ else
+ 		LDFLAGS += --pre-js wasm_pre.js
+ 		# LDFLAGS += --preload-file eval/nn.bin
+ 		LDFLAGS += -s MODULARIZE=1 -s EXPORT_NAME="$(EM_EXPORT_NAME)" -s ENVIRONMENT=web,worker,node
+-		LDFLAGS += -s PTHREAD_POOL_SIZE=32
++		LDFLAGS += -s PTHREAD_POOL_SIZE=6
+ 		# -s PTHREAD_POOL_SIZE_STRICT=32
+ 		LDFLAGS += -s FILESYSTEM=1 -s EXIT_RUNTIME=0 -s "EXPORTED_RUNTIME_METHODS=['FS','ccall']"
+-		LDFLAGS += -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=$(EM_INITIAL_MEMORY_SIZE) -s MAXIMUM_MEMORY=4294967296
++		LDFLAGS += -s ALLOW_MEMORY_GROWTH=1 -s INITIAL_MEMORY=$(EM_INITIAL_MEMORY_SIZE) -s MAXIMUM_MEMORY=1073741824
+ 		LDFLAGS += -s STACK_SIZE=67108864
++		LDFLAGS += -s "INCOMING_MODULE_JS_API=['print','printErr','locateFile','mainScriptUrlOrBlob','wasmBinary','postRun','preRun','onRuntimeInitialized']"
+ 		# LDFLAGS += -s PROXY_TO_PTHREAD
+ 		# LDFLAGS += -s ALLOW_UNIMPLEMENTED_SYSCALLS
+ 		# LDFLAGS += -s ASSERTIONS
+-		LDFLAGS += -s --closure 1
++		# closure disabled
+ 	endif
+ endif
+ 
+diff --git a/source/engine.cpp b/source/engine.cpp
+index 31c39ce..d85e404 100644
+--- a/source/engine.cpp
++++ b/source/engine.cpp
+@@ -135,7 +135,13 @@ void Engine::add_options() {
+     options.add(  //
+       // 📝 やねうら王では default threadを4に変更する。
+       //     過去にdefault設定のまま対局させて「やねうら王弱い」という人がいたため。
+-      "Threads", Option(4, 1, MaxThreads, [this](const Option&) {
++      "Threads", Option(
++#if defined(__EMSCRIPTEN__)
++      1,
++#else
++      4,
++#endif
++      1, MaxThreads, [this](const Option&) {
+           resize_threads();
+           return thread_allocation_information_as_string();
+       }));
+diff --git a/source/engine/yaneuraou-engine/yaneuraou-search.cpp b/source/engine/yaneuraou-engine/yaneuraou-search.cpp
+index ac0c3d5..84156fc 100644
+--- a/source/engine/yaneuraou-engine/yaneuraou-search.cpp
++++ b/source/engine/yaneuraou-engine/yaneuraou-search.cpp
+@@ -138,7 +138,13 @@ void YaneuraOuEngine::add_options() {
+ #else
+ 	// 🌈 やねうら王では、default値を1024に変更。
+     options.add(  //
+-        "USI_Hash", Option(1024, 1, MaxHashMB, [this](const Option& o) {
++        "USI_Hash", Option(
++#if defined(__EMSCRIPTEN__)
++            16,
++#else
++            1024,
++#endif
++            1, MaxHashMB, [this](const Option& o) {
+             set_tt_size(o);
+             return std::nullopt;
+         }));
+diff --git a/source/eval/nnue/evaluate_nnue.cpp b/source/eval/nnue/evaluate_nnue.cpp
+index 1af65ed..91cf8fa 100644
+--- a/source/eval/nnue/evaluate_nnue.cpp
++++ b/source/eval/nnue/evaluate_nnue.cpp
+@@ -373,8 +373,12 @@ namespace {
+ 		}
+ #if defined(SFNNwoPSQT) && NNUE_SFNN_PROGRESS_BUCKETS != 1
+ 		const std::string eval_dir = Options["EvalDir"];
++#if defined(__EMSCRIPTEN__)
++		const auto progress_path = Path::Combine(eval_dir, "progress.bin");
++#else
+ 		const auto progress_path = Path::Combine(
+ 		    Path::Combine(Directory::GetBinaryFolder(), eval_dir), "progress.bin");
++#endif
+ 		std::ifstream progress_stream(progress_path, std::ios::binary);
+ 		sync_cout << "info string loading progress file : " << progress_path << sync_endl;
+ 		result = progress_stream.is_open()
+diff --git a/source/usi.cpp b/source/usi.cpp
+index 3bf539a..ee3e8d0 100644
+--- a/source/usi.cpp
++++ b/source/usi.cpp
+@@ -1809,6 +1809,7 @@ std::string USIEngine::value(Value v)
+ #endif
+ 
+ #if defined(__EMSCRIPTEN__)
++#include <emscripten/eventloop.h>
+ // --------------------
+ // EMSCRIPTEN support
+ // --------------------
+@@ -1822,6 +1823,9 @@ std::unique_ptr<USIEngine> wasm_usi;
+ void wasm_keep_alive(std::unique_ptr<IEngine> engine, std::unique_ptr<USIEngine> usi) {
+     wasm_engine = std::move(engine);
+     wasm_usi    = std::move(usi);
++    // main()がreturnしてもランタイムを終了させない。
++    // (終了扱いになるとpthreadのWorkerプールが破棄され、以後のスレッド生成がブラウザで固まる)
++    emscripten_runtime_keepalive_push();
+ }
+ 
+ USIEngine* wasm_usi_instance() { return wasm_usi.get(); }
+diff --git a/source/wasm_pre.js b/source/wasm_pre.js
+index b10378d..1482508 100644
+--- a/source/wasm_pre.js
++++ b/source/wasm_pre.js
+@@ -7,9 +7,7 @@
+   Module["print"] = function (line) {
+     if (listeners.length === 0) console.log(line);
+     else
+-      setTimeout(function () {
+-        for (var i = 0; i < listeners.length; i++) listeners[i](line);
+-      });
++      for (var i = 0; i < listeners.length; i++) listeners[i](line);
+   };
+ 
+   Module["addMessageListener"] = function (listener) {
